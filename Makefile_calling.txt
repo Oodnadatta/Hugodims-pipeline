@@ -203,11 +203,6 @@ $(OUTDIR)/BED/fusion.bed : /commun/data/pubdb/agilent/designs/S06588914/S0658891
 	${bedtools.exe} merge -d ${capture.extend.size} -i - > $(addsuffix .tmp,$@) && \
 	mv  $(addsuffix .tmp,$@) $@
 
-<<<<<<< HEAD
-#Create a file with the names of bam in it. It is regenerated everytime the list changes.
-
-=======
->>>>>>> a1c73e0b002c409847ec1660cbbf5786627639a9
 $(eval $(foreach M,${METHODS},$(call concat,${M})))
 $(eval $(foreach M,${METHODS},$(foreach C,${CHROM},$(call annot,$(OUTDIR)/VCF/${M}${C}.annot.vcf.gz,$(OUTDIR)/VCF/${M}${C}.vcf.gz))))
 $(eval $(foreach C,${CHROM},$(call calling,${C})))
