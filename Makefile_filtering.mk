@@ -2,10 +2,10 @@
 #Pour l'ajout de nouveaux patients, modifier la variable TRIOS, pas besoin de modifier parents.list (auto).
 #Variables
 SHELL=/bin/bash
-SAMPLEDIR=/commun/data/users/asdp/align20150211/test10/VCF
+SAMPLEDIR=/commun/data/users/asdp/align20150211/call20160810/VCF
 JVARKIT=/commun/data/packages/jvarkit-git
 GUNZIP=/bin/gunzip
-JAVA=/usr/bin/java
+JAVA=/commun/data/packages/jdk/jdk1.8.0_60/bin/java -Xmx16g
 GZIP=/bin/gzip
 CAT=/bin/cat
 ECHO=/bin/echo
@@ -17,8 +17,25 @@ AWK=/bin/awk
 SORT=/bin/sort
 VCFSCRIPTS=/commun/data/users/asdp/Hugodims/VCFscripts
 TABIX=/commun/data/packages/tabix-0.2.6
+DB=${HOME}/src
+SNPEFF=${HOME}/src/snpEff
+BEDTOOLS=/commun/data/packages/bedtools/bedtools2-2.25.0/bin
+GENESDILST=regovar_genespanel_intellectual_disability_201600918.lst
+SEXLST=sex_list.tsv
+PARBED=PAR.bed
+REF=/commun/data/pubdb/broadinstitute.org/bundle/1.5/b37/index-bwa-0.7.10/human_g1k_v37.fasta
+HZNCOM=${VCFSCRIPTS}/20160921_full_0.0001-0.01-0.005/hz_n_compositeEFF.py
+FLTR=${VCFSCRIPTS}/20160921_full_0.0001-0.01-0.005/fltr.py
 
-PIPE= trio vartrio varchild varchildexon incompats genotype predict gonl_nogenotype gonl_genotype evs_nogenotype evs_genotype parents_nogenotype parents_genotype
+#Variants dont la fréquence est strictement supérieure à FREQUENCY
+DENOVO_FREQUENCY= 0.0001
+HETEROZYGOUSREC_FREQUENCY= 0.01
+HOMOZYGOUSREC_FREQUENCY= 0.01
+XLINKED_FREQUENCY= 0.005
+
+FREQUENCIES=$(sort ${DENOVO_FREQUENCY} ${HETEROZYGOUSREC_FREQUENCY} ${HOMOZYGOUSREC_FREQUENCY} ${XLINKED_FREQUENCY})
+
+PIPE= trio vartrio varchild varchildexon predict pass depth gonl_nogenotype $(foreach F, ${FREQUENCIES}, gonl_genotype_${F}) $(foreach F, ${FREQUENCIES}, evs_nogenotype_${F}) $(foreach F, ${FREQUENCIES}, evs_genotype_${F}) incompats genotype parents_nogenotype parents_genotype $(foreach F, ${FREQUENCIES}, exac_genotype_${F}) heterozygous_rec homozygous_rec heterozygous_rec.genesdi homozygous_rec.genesdi xlinked parents_genotype.annot.rvis heterozygous_rec.annot.rvis homozygous_rec.annot.rvis xlinked.annot.rvis parents_genotype.annot.cadd heterozygous_rec.annot.cadd homozygous_rec.annot.cadd xlinked.annot.cadd
 
 TRIOS = \
 	trio01|03-05-SA-E|03-05-SA-M|03-05-SA-P \
@@ -83,12 +100,17 @@ TRIOS = \
 	trio60|16-03-CM-E|16-03-CM-M|16-03-CM-P \
 	trio61|11-06-BB-E|11-06-BB-M|11-06-BB-P \
 	trio62|14-03-HG-E|14-03-HG-M|14-03-HG-P \
-	trio63|12-05-PB-E|12-05-PB-M|12-05-PB-P
+	trio63|12-05-PB-E|12-05-PB-M|12-05-PB-P \
+	trio64|05-02-SL-E|05-02-SL-M|05-02-SL-P \
+	trio65|13-06-PN-E|13-06-PN-M|13-06-PN-P \
+	trio66|05-03-RC-E|05-03-RC-M|05-03-RC-P \
+	trio67|15-01-RC-E|15-01-RC-M|15-01-RC-P \
+	trio68|13-05-BM-E|13-05-BM-M|13-05-BM-P \
+	trio69|16-01-FA-E|16-01-FA-M|16-01-FA-P
 
 METHODS= hapcal
 
-#Variants dont la fréquence est strictement supérieure à FREQUENCY
-FREQUENCY= 0.001
+ANNOTATE= parents_genotype homozygous_rec heterozygous_rec xlinked
 
 #Fonctions
 
@@ -108,11 +130,11 @@ define triochild
 $(word 2,$(subst |, ,$(1)))
 endef
 
-
-#Compte le nombre de variants obtenus à chaque étape (tableau : étape	nombre)
 define pipecount
 
+#Compte le nombre de variants obtenus à chaque étape (tableau : étape	nombre)
 pipecount.$(1).$(call triochild,$(2)).log : $(foreach F, ${PIPE}, $(1).$(call triochild,$(2)).${F}.vcf.gz)
+	> $$@
 	for f in ${PIPE}; \
 	do \
 		${ECHO} "$$$$f.vcf.gz	`${GUNZIP} -c $(1).$(call triochild,$(2)).$$$$f.vcf.gz |\
@@ -146,33 +168,62 @@ $(1).parentsdb_$(call triochild,$(2)).vcf.gz : $(1).parentsdb.vcf.gz
 
 endef 
 
+define annotate_trio
 
-define analyse_trio
+$(1).$(call triochild,$(2)).$(3).annot.cadd.vcf.gz: $(1).$(call triochild,$(2)).$(3).annot.cadd.vcf
+	${GZIP} --best < $$< > $$@
 
-#Compte le nombre d'occurences pour chaque type de variant
-#echo -n do not output the trailing newline
-#grep -F Interpret PATTERN as a list of fixed strings, separated by newlines, any of which is to be matched.
-#à partir de variant_type.list, pour chaque type de variant (f), écrit "f\t" et écrit le nombre d'occurence de f
-vartype_fin.$(1).$(call triochild,$(2)).log : $(1).$(call triochild,$(2)).gonl_genotype.vcf.gz ${VCFSCRIPTS}/20150123_vartype/variant_types.list
-	${CAT} $$(filter %.list,$$^) | while read f; do ${ECHO} -n "$$$$f       " && ${GUNZIP} -c $$< | ${GREP} -v '^#' | ${GREP} -F "$$$$f" | wc -l ; done > $$@
+$(1).$(call triochild,$(2)).$(3).annot.cadd.vcf: $(1).$(call triochild,$(2)).$(3).annot.rvis.vcf
+	${FLTR} --cadd $$< $$@
 
-#Filtrer les vcf avec parentsdb_trio (AVEC genotype)
-$(1).$(call triochild,$(2)).parents_genotype.vcf.gz : $(1).$(call triochild,$(2)).evs_genotype.vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz.tbi
-	${GUNZIP} -c $$< |\
-	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x $(1).parentsdb_$(call triochild,$(2)).vcf.gz |\
+$(1).$(call triochild,$(2)).$(3).annot.rvis.vcf.gz: $(1).$(call triochild,$(2)).$(3).annot.rvis.vcf
+	${GZIP} --best < $$< > $$@
+
+$(1).$(call triochild,$(2)).$(3).annot.rvis.vcf: $(1).$(call triochild,$(2)).$(3).annot.vcf
+	${FLTR} --rvis $$< $$@
+
+$(1).$(call triochild,$(2)).$(3).annot.vcf : $(1).$(call triochild,$(2)).$(3).vcf.gz
+	zgrep -q -v '^#' $$< && \
+	/commun/data/packages/vep/ensembl-tools-release-76/scripts/variant_effect_predictor/variant_effect_predictor.pl  \
+		--cache --dir /commun/data/pubdb/ensembl/vep/cache --write_cache  \
+		--species homo_sapiens \
+		--assembly GRCh37 \
+		--db_version 76 \
+		--fasta ${REF} \
+		--offline \
+		--symbol \
+		--format vcf \
+		--force_overwrite \
+		--sift=b \
+		--polyphen=b \
+		--refseq \
+		--gmaf \
+		--maf_1kg \
+		--maf_esp \
+		--everything \
+		--pubmed \
+		--xref_refseq \
+		--quiet --vcf	--no_stats \
+		-i $$^ \
+		-o $$(addsuffix .tmp.vcf, $$@) && \
+	${JAVA} -jar ${SNPEFF}/SnpSift.jar dbnsfp -v -db ${DB}/dbNsfp/2.9.1_hg19_20160330.vcf.gz $$(addsuffix .tmp.vcf, $$@) > $$(addsuffix .tmp2.vcf, $$@) && \
+	${JAVA} -jar ${SNPEFF}/SnpSift.jar annotate -id ${DB}/dbSNP/human_9606_b147_GRCh37p13_all_20160601.vcf.gz -v $$(addsuffix .tmp2.vcf, $$@) > $$(addsuffix .tmp3.vcf, $$@) && \
+	${JAVA} -jar ${SNPEFF}/SnpSift.jar annotate -id ${DB}/clinvar/GRCh37_20160831.vcf.gz -v $$(addsuffix .tmp3.vcf, $$@) > $$@ && \
+	rm $$(addsuffix .tmp.vcf, $$@) $$(addsuffix .tmp2.vcf, $$@) $$(addsuffix .tmp3.vcf, $$@) || \
+	zcat $$< > $$@
+endef
+
+define analyse_trio_with_frequency
+
+#filtrer sur ExAC (AVEC génotype)
+$(1).$(call triochild,$(2)).exac_genotype_$(3).vcf.gz :  $(1).$(call triochild,$(2)).gonl_genotype_$(3).vcf.gz ExAC.r0.3.sites.vep_$(3).vcf.gz
+	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x  ExAC.r0.3.sites.vep_$(3).vcf.gz $$< |\
 	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").isCalled() ' |\
-	${TABIX}/bgzip > $$@ && \
-	${TABIX}/tabix -p vcf $$@
-
-#filtrer les vcf avec parentsdb_trio (SANS génotype)
-$(1).$(call triochild,$(2)).parents_nogenotype.vcf.gz : $(1).$(call triochild,$(2)).evs_genotype.vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz
-	/commun/data/packages/bedtools/bedtools2-2.20.1/bin/bedtools intersect -header -wa -v -a $$< -b $(1).parentsdb_$(call triochild,$(2)).vcf.gz |\
-	${GZIP} --best > $$@ && \
-	test $$$${PIPESTATUS[0]} -eq 0 
+	${GZIP} --best > $$@
 
 #filtrer sur evs (>= FREQUENCY, pas de prise en compte du génotype)
-$(1).$(call triochild,$(2)).evs_nogenotype.vcf.gz : $(1).$(call triochild,$(2)).gonl_genotype.vcf.gz
-	/commun/data/packages/bedtools/bedtools2-2.20.1/bin/bedtools intersect -header -wa -v -a $$^ -b <(${TAR} Oxfz ${VCFSCRIPTS}/20150126_evs/vcftools/ESP6500SI-V2.GRCh38-liftover.coverage.all_sites.txt.tar.gz  |\
+$(1).$(call triochild,$(2)).evs_nogenotype_$(3).vcf.gz : $(1).$(call triochild,$(2)).gonl_genotype_$(3).vcf.gz
+	${BEDTOOLS}/bedtools intersect -header -wa -v -a $$^ -b <(${TAR} Oxfz ${VCFSCRIPTS}/20150126_evs/vcftools/ESP6500SI-V2.GRCh38-liftover.coverage.all_sites.txt.tar.gz  |\
 	${AWK} -F ' ' '(NF>=9 && int($$$$3)>=650)' | cut -d ' ' -f1,2 |\
 	${AWK} -F ' ' '{printf("%s\t%d\t%d\n",$$$$1,int($$$$2),int($$$$2)+1);}' |\
 	LC_ALL=C ${SORT} -T /commun/data/users/asdp/Hugodims/tmp -t '	' -k1,1 -k2,2n) |\
@@ -181,34 +232,94 @@ $(1).$(call triochild,$(2)).evs_nogenotype.vcf.gz : $(1).$(call triochild,$(2)).
 
 #filter sur evs (>= FREQUENCY, AVEC génotype)
 #-r remove whole variant if there is no called genotype
-$(1).$(call triochild,$(2)).evs_genotype.vcf.gz : $(1).$(call triochild,$(2)).gonl_genotype.vcf.gz evs.20150206_${FREQUENCY}.vcf.gz
-	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x evs.20150206_${FREQUENCY}.vcf.gz $$< |\
+$(1).$(call triochild,$(2)).evs_genotype_$(3).vcf.gz : $(1).$(call triochild,$(2)).gonl_genotype_$(3).vcf.gz evs.20150206_$(3).vcf.gz
+	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x evs.20150206_$(3).vcf.gz $$< |\
 	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").isCalled() ' |\
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[0]} -eq 0
 
 #filtrer sur GoNL (>= FREQUENCY, AVEC génotype)
 #-r remove whole variant if there is no called genotype
-$(1).$(call triochild,$(2)).gonl_genotype.vcf.gz : $(1).$(call triochild,$(2)).predict.vcf.gz release4_noContam_noChildren_with_AN_AC_GTC_stripped_${FREQUENCY}.vcf.gz
-	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x release4_noContam_noChildren_with_AN_AC_GTC_stripped_${FREQUENCY}.vcf.gz $$< |\
+$(1).$(call triochild,$(2)).gonl_genotype_$(3).vcf.gz : $(1).$(call triochild,$(2)).depth.vcf.gz release4_noContam_noChildren_with_AN_AC_GTC_stripped_$(3).vcf.gz
+	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x release4_noContam_noChildren_with_AN_AC_GTC_stripped_$(3).vcf.gz $$< |\
 	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").isCalled() ' |\
 	${GZIP} --best > $(addsuffix .tmp.gz,$$@) && \
 	test $$$${PIPESTATUS[0]} -eq 0 && \
 	mv $(addsuffix .tmp.gz,$$@) $$@
 
+endef
+
+define analyse_trio
+
+#filtrer avec hz_n_compositeEFF
+$(1).$(call triochild,$(2)).xlinked.vcf.gz : $(1).$(call triochild,$(2)).exac_genotype_${XLINKED_FREQUENCY}.vcf.gz ${SEXLST} ${PARBED}
+	( grep -q "$$$$(echo $(call triochild,$(2)) | sed 's/-E//').*M" ${SEXLST} && ( \
+	    ${GUNZIP} -c $$< |\
+	    ${HZNCOM} -xlinked-male \
+        ) || ( \
+	    ${GUNZIP} -c $$< |\
+            grep '^\(#\|[^ 	]*[xX]\)' \
+        ) ) | \
+        ${BEDTOOLS}/bedtools intersect -header -wa -v -a stdin -b ${PARBED} |\
+	perl -I /commun/data/packages/vcftools/vcftools_0.1.12b/perl/ /commun/data/packages/vcftools/vcftools_0.1.12b/bin/vcf-sort -c -t /commun/data/users/asdp/Hugodims/tmp |\
+	${TABIX}/bgzip > $$@ && \
+	${TABIX}/tabix -p vcf $$@
+
+#filtrer avec hz_n_compositeEFF
+$(1).$(call triochild,$(2)).heterozygous_rec.vcf.gz : $(1).$(call triochild,$(2)).exac_genotype_${HETEROZYGOUSREC_FREQUENCY}.vcf.gz
+	${GUNZIP} -c $$^ |\
+	${HZNCOM} -heterozygous |\
+	perl -I /commun/data/packages/vcftools/vcftools_0.1.12b/perl/ /commun/data/packages/vcftools/vcftools_0.1.12b/bin/vcf-sort -c -t /commun/data/users/asdp/Hugodims/tmp |\
+	${TABIX}/bgzip > $$@ && \
+	${TABIX}/tabix -p vcf $$@
+
+#filtrer avec hz_n_compositeEFF
+$(1).$(call triochild,$(2)).homozygous_rec.vcf.gz : $(1).$(call triochild,$(2)).exac_genotype_${HOMOZYGOUSREC_FREQUENCY}.vcf.gz
+	${GUNZIP} -c $$^ |\
+	${HZNCOM} -homozygous |\
+	perl -I /commun/data/packages/vcftools/vcftools_0.1.12b/perl/ /commun/data/packages/vcftools/vcftools_0.1.12b/bin/vcf-sort -c -t /commun/data/users/asdp/Hugodims/tmp |\
+	${TABIX}/bgzip > $$@ && \
+	${TABIX}/tabix -p vcf $$@
+
+#Filtrer les vcf avec parentsdb_trio (AVEC genotype)
+$(1).$(call triochild,$(2)).parents_genotype.vcf.gz : $(1).$(call triochild,$(2)).genotype.vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz.tbi
+	${GUNZIP} -c $$< |\
+	${JAVA} -jar ${JVARKIT}/vcfresetvcf.jar -r -x $(1).parentsdb_$(call triochild,$(2)).vcf.gz |\
+	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").isCalled() ' |\
+	${TABIX}/bgzip > $$@ && \
+	${TABIX}/tabix -p vcf $$@
+
+#filtrer les vcf avec parentsdb_trio (SANS génotype)
+$(1).$(call triochild,$(2)).parents_nogenotype.vcf.gz : $(1).$(call triochild,$(2)).genotype.vcf.gz $(1).parentsdb_$(call triochild,$(2)).vcf.gz
+	${BEDTOOLS}/bedtools intersect -header -wa -v -a $$< -b $(1).parentsdb_$(call triochild,$(2)).vcf.gz |\
+	${GZIP} --best > $$@ && \
+	test $$$${PIPESTATUS[0]} -eq 0 
+
 #filtrer sur GoNL (>= FREQUENCY, SANS génotype)
 $(1).$(call triochild,$(2)).gonl_nogenotype.vcf.gz : $(1).$(call triochild,$(2)).predict.vcf.gz
-	/commun/data/packages/bedtools/bedtools2-2.20.1/bin/bedtools intersect -header -wa -v -a <(gunzip -c $$^) -b <(gunzip -c ${VCFSCRIPTS}/20150209_GoNLgeno/release4_noContam_noChildren_with_AN_AC_GTC_stripped_0.01.gz |\
+	${BEDTOOLS}/bedtools intersect -header -wa -v -a <(gunzip -c $$^) -b <(gunzip -c ${VCFSCRIPTS}/20150209_GoNLgeno/release4_noContam_noChildren_with_AN_AC_GTC_stripped_0.01.gz |\
 	cut -d '	' -f1,2 |\
 	${AWK} -F '	' '{printf("%s\t%d\t%d\n",$$$$1,int($$$$2),int($$$$2)+1);}' |\
 	LC_ALL=C ${SORT} -T /commun/data/users/asdp/Hugodims/tmp -t '	' -k1,1 -k2,2n) |\
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[0]} -eq 0
 
-#Filter a VCF file annotated with SNPEff or VEP with term exon_variant (from Sequence-Ontology)
-$(1).$(call triochild,$(2)).predict.vcf.gz : $(1).$(call triochild,$(2)).genotype.vcf.gz
+#Sélectionner variants où DP > 5 chez l'enfant
+$(1).$(call triochild,$(2)).depth.vcf.gz : $(1).$(call triochild,$(2)).pass.vcf.gz
 	${GUNZIP} -c $$< |\
-	${JAVA} -jar ${JVARKIT}/vcffilterso.jar -A SO:0001818 -A SO:0001590 -A SO:0001572 -A SO:0001629 -A SO:0001569 -A SO:0001630 |\
+	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").getDP()>5' |\
+	${GZIP} --best > $$@
+
+#Supprimer les variants sans le filtre PASS
+$(1).$(call triochild,$(2)).pass.vcf.gz : $(1).$(call triochild,$(2)).predict.vcf.gz
+	${GUNZIP} -c $$^ |\
+	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.isFiltered()==false' |\
+	${GZIP} --best > $$@
+
+#Filter a VCF file annotated with SNPEff or VEP with term exon_variant (from Sequence-Ontology)
+$(1).$(call triochild,$(2)).predict.vcf.gz : $(1).$(call triochild,$(2)).varchild.vcf.gz
+	${GUNZIP} -c $$< |\
+	${JAVA} -jar ${JVARKIT}/vcffilterso.jar -A SO:0001818 SO:0001590 SO:0001572 SO:0001629 SO:0001569 SO:0001630 -- |\
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[1]} -eq 0
 
@@ -222,19 +333,12 @@ $(1).$(call triochild,$(2)).genotype.vcf.gz : $(1).$(call triochild,$(2)).incomp
 	${RM} -f $(addsuffix .tmp.js,$$@)
 
 #Excludes all sites without the incompatibilities flag (MENDEL)
-$(1).$(call triochild,$(2)).incompats.vcf.gz : $(1).$(call triochild,$(2)).trio.vcf.gz pedigree.txt
+$(1).$(call triochild,$(2)).incompats.vcf.gz : $(1).$(call triochild,$(2)).evs_genotype_${DENOVO_FREQUENCY}.vcf.gz pedigree.txt
 	${GUNZIP} -c $$< |\
 	${JAVA} -jar ${JVARKIT}/vcftrio.jar -p $$(filter %.txt,$$^) |\
 	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.hasAttribute("MENDEL")' |\
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[1]} -eq 0
-
-#Compte le nombre d'occurences pour chaque type de variant
-#echo -n do not output the trailing newline
-#grep -F Interpret PATTERN as a list of fixed strings, separated by newlines, any of which is to be matched.
-#à partir de variant_type.list, pour chaque type de variant (f), écrit "f\t" et écrit le nombre d'occurence de f
-vartype_ini.$(1).$(call triochild,$(2)).log : $(1).$(call triochild,$(2)).trio.vcf.gz ${VCFSCRIPTS}/20150123_vartype/variant_types.list
-	${CAT} $$(filter %.list,$$^) | while read f; do ${ECHO} -n "$$$$f	" && ${GUNZIP} -c $$< | ${GREP} -v '^#' | ${GREP} -F "$$$$f" | wc -l ; done > $$@
 
 #Filter a VCF file annotated with SNPEff or VEP with term exon_variant (from Sequence-Ontology)
 $(1).$(call triochild,$(2)).varchildexon.vcf.gz : $(1).$(call triochild,$(2)).varchild.vcf.gz
@@ -243,7 +347,7 @@ $(1).$(call triochild,$(2)).varchildexon.vcf.gz : $(1).$(call triochild,$(2)).va
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[1]} -eq 0
 
-#Keep variants called for child only
+#Keep variants called for child only and different from the reference (enlève ./. et 0/0)
 $(1).$(call triochild,$(2)).varchild.vcf.gz : $(1).$(call triochild,$(2)).trio.vcf.gz
 	${GUNZIP} -c $$^ |\
 	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e 'variant.getGenotype("$(call triochild,$(2))").isCalled() && variant.getGenotype("$(call triochild,$(2))").isHomRef()==false' |\
@@ -263,10 +367,12 @@ $(1).$(call triochild,$(2)).vartrio.vcf.gz : $(1).$(call triochild,$(2)).trio.vc
 # $(1) : arg 1:  method
 # $(2) : arg 2 : structure trio
 #-S : argument pour indiquer les trios à garder dans le vcf
-$(1).$(call triochild,$(2)).trio.vcf.gz : ${SAMPLEDIR}/$(1)_all.annot.vcf.gz
+$(1).$(call triochild,$(2)).trio.vcf.gz : ${SAMPLEDIR}/$(1)_all.annot_vqsr.vcf.gz
 	${GUNZIP} -c $$< |\
 	${JAVA} -jar /commun/data/packages/jvarkit-git/vcfcutsamples.jar \
 		$$(foreach I, $(call triofather,$(2))  $(call triomother,$(2))  $(call triochild,$(2)), -S $$I) |\
+		${SED} 's/\bANN=/EFF=/g' |\
+		${SED} 's/\bID=ANN,/ID=EFF,/g' |\
 	${GZIP} --best > $$@ && \
 	test $$$${PIPESTATUS[1]} -eq 0
 
@@ -275,12 +381,15 @@ endef
 #Cible
 all: 	\
 	pipecount.log \
-	$(foreach M,${METHODS},$(foreach T,${TRIOS},vartype_fin.${M}.$(call triochild,$T).log)) \
+	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).xlinked.vcf.gz)) \
+	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).heterozygous_rec.genesdi.vcf.gz)) \
+	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).homozygous_rec.genesdi.vcf.gz)) \
+	$(foreach M,${METHODS},$(foreach A,${ANNOTATE},$(foreach T,${TRIOS}, ${M}.$(call triochild,${T}).${A}.annot.rvis.vcf.gz))) \
+	$(foreach M,${METHODS},$(foreach A,${ANNOTATE},$(foreach T,${TRIOS}, ${M}.$(call triochild,${T}).${A}.annot.cadd.vcf.gz))) \
 	$(foreach T,${TRIOS}, hapcal.$(call triochild,$T).parents_genotype.vcf.gz) \
 	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).parents_nogenotype.vcf.gz)) \
 	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).gonl_nogenotype.vcf.gz)) \
-	$(foreach M,${METHODS},$(foreach T,${TRIOS},${M}.$(call triochild,$T).evs_nogenotype.vcf.gz)) \
-	$(foreach M,${METHODS},$(foreach T,${TRIOS},vartype_ini.${M}.$(call triochild,$T).log))
+	$(foreach M,${METHODS},$(foreach T,${TRIOS},$(foreach F, ${FREQUENCIES}, ${M}.$(call triochild,$T).evs_nogenotype_${F}.vcf.gz)))
 	echo "AYE J'AI FINI"
 
 pipecount.log: $(foreach M,${METHODS},$(foreach T,${TRIOS},pipecount.$(M).$(call triochild,$(T)).log))
@@ -288,46 +397,69 @@ pipecount.log: $(foreach M,${METHODS},$(foreach T,${TRIOS},pipecount.$(M).$(call
 	paste $^ | awk '{ for (col = 3; col <= NF;col += 2) $$col = "" } 1'| sed 's/  /\t/g' >> $@
 
 
-evs.20150206_${FREQUENCY}.vcf.gz: /commun/data/pubdb/evs.gs.washington.edu/tabix/evs.20150206.vcf.gz
-	${GUNZIP} -c $^ |\
-	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e '!((variant.getAttribute("uaMAF")<=${FREQUENCY}) || (variant.getAttribute("aaMAF")<=${FREQUENCY}) || (variant.getAttribute("totalMAF")<=${FREQUENCY}))' |\
-	${TABIX}/bgzip > $@
-	${TABIX}/tabix -p vcf $@
+define resources_with_frequency
+
+evs.20150206_$(1).vcf.gz: /commun/data/pubdb/evs.gs.washington.edu/tabix/evs.20150206.vcf.gz
+	$${GUNZIP} -c $$^ |\
+	$${JAVA} -jar $${JVARKIT}/vcffilterjs.jar -e '!((variant.getAttribute("uaMAF")<=$(1)) || (variant.getAttribute("aaMAF")<=$(1)) || (variant.getAttribute("totalMAF")<=$(1)))' |\
+	$${TABIX}/bgzip > $$@
+	$${TABIX}/tabix -p vcf $$@
 
 
-release4_noContam_noChildren_with_AN_AC_GTC_stripped_${FREQUENCY}.vcf.gz: ${VCFSCRIPTS}/20150209_GoNLgeno/release4_noContam_noChildren_with_AN_AC_GTC_stripped.tar.gz
-	${TAR} tfz $^ |\
-	${GREP} -v tbi |\
-	while read V; do ${TAR} xfzO $^ $$V | ${GUNZIP} -c ; done |\
-	${GREP} '^##' > $(addsuffix _gonl.vcf.tmp,$@)
-	head -n 1 $(addsuffix _gonl.vcf.tmp,$@) > $(addsuffix _gonl.vcf.tmp2,$@)
-	head -n -1 $(addsuffix _gonl.vcf.tmp,$@) | sort -T /commun/data/users/asdp/Hugodims/tmp -u >> $(addsuffix _gonl.vcf.tmp2,$@)
-	${ECHO} "#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO" >> $(addsuffix _gonl.vcf.tmp2,$@)
-	${TAR} tfz $^ |\
-	${GREP} -v tbi |\
-	while read V; do ${TAR} xfzO $^ $$V | ${GUNZIP} -c ; done |\
-	${GREP} -v '^#' >> $(addsuffix _gonl.vcf.tmp2,$@)
-	${JAVA} -jar ${JVARKIT}/vcffilterjs.jar -e '(variant.getAttribute("AC")/variant.getAttribute("AN")>=${FREQUENCY})' $(addsuffix _gonl.vcf.tmp2,$@) > $(addsuffix _gonl.vcf.tmp3,$@)
-	${TABIX}/bgzip $(addsuffix _gonl.vcf.tmp3,$@)
-	mv $(addsuffix _gonl.vcf.tmp3.gz,$@) $@
-	${TABIX}/tabix -p vcf $@
-	${RM} $(addsuffix _gonl.vcf.tmp,$@) $(addsuffix _gonl.vcf.tmp2,$@)
+release4_noContam_noChildren_with_AN_AC_GTC_stripped_$(1).vcf.gz: $${VCFSCRIPTS}/20150209_GoNLgeno/release4_noContam_noChildren_with_AN_AC_GTC_stripped.tar.gz
+	$${TAR} tfz $$^ |\
+	$${GREP} -v tbi |\
+	while read V; do $${TAR} xfzO $$^ $$$$V | $${GUNZIP} -c ; done |\
+	$${GREP} '^##' > $$(addsuffix _gonl.vcf.tmp,$$@)
+	head -n 1 $$(addsuffix _gonl.vcf.tmp,$$@) > $$(addsuffix _gonl.vcf.tmp2,$$@)
+	head -n -1 $$(addsuffix _gonl.vcf.tmp,$$@) | sort -T /commun/data/users/asdp/Hugodims/tmp -u >> $$(addsuffix _gonl.vcf.tmp2,$$@)
+	$${ECHO} "#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO" >> $$(addsuffix _gonl.vcf.tmp2,$$@)
+	$${TAR} tfz $$^ |\
+	$${GREP} -v tbi |\
+	while read V; do $${TAR} xfzO $$^ $$$$V | $${GUNZIP} -c ; done |\
+	$${GREP} -v '^#' >> $$(addsuffix _gonl.vcf.tmp2,$$@)
+	$${JAVA} -jar $${JVARKIT}/vcffilterjs.jar -e '(variant.getAttribute("AC")/variant.getAttribute("AN")>=$(1))' $$(addsuffix _gonl.vcf.tmp2,$$@) > $$(addsuffix _gonl.vcf.tmp3,$$@)
+	$${TABIX}/bgzip $$(addsuffix _gonl.vcf.tmp3,$$@)
+	mv $$(addsuffix _gonl.vcf.tmp3.gz,$$@) $$@
+	$${TABIX}/tabix -p vcf $$@
+	$${RM} $$(addsuffix _gonl.vcf.tmp,$$@) $$(addsuffix _gonl.vcf.tmp2,$$@)
 
-exacfilter${FREQUENCY}.js: ${VCFSCRIPTS}/20150416_exac/exacfileteraf.js
-	${SED} 's/__frequency__/${FREQUENCY}/g' $^ > $@
+exacfilter$(1).js: $${VCFSCRIPTS}/20150416_exac/exacfileteraf.js
+	$${SED} 's/__frequency__/$(1)/g' $$^ > $$@
+
+ExAC.r0.3.sites.vep_$(1).vcf.gz: /commun/data/pubdb/broadinstitute.org/exac/0.3/ExAC.r0.3.sites.vep.vcf.gz exacfilter$(1).js
+	$${GUNZIP} -c $$< |\
+	$${JAVA} -jar $${JVARKIT}/vcffilterjs.jar -f exacfilter$(1).js |\
+	$${TABIX}/bgzip > $$(addsuffix .tmp.gz,$$@) && \
+	$${TABIX}/tabix -p vcf -f $$(addsuffix .tmp.gz,$$@) && \
+	mv $$(addsuffix .tmp.gz,$$@) $$@ && \
+	mv $$(addsuffix .tmp.gz.tbi,$$@) $$(addsuffix .tbi,$$@)
+
+endef
 
 pedigree.txt: 
 	$(foreach I,${TRIOS}, echo "$(call trioid,$I)	$(call triochild,$I)	$(call triofather,$I)	$(call triomother,$I)	0	0" >> $@; )
 	$(foreach I,${TRIOS}, echo "$(call trioid,$I)	$(call triofather,$I)	0	0	0	0" >> $@; )
 	$(foreach I,${TRIOS}, echo "$(call trioid,$I)	$(call triomother,$I)	0	0	0	0" >> $@; )
 
+$(eval $(foreach M,${METHODS},$(foreach A,${ANNOTATE},$(foreach T,${TRIOS},$(call annotate_trio,${M},${T},${A})))))
 $(eval $(foreach M,${METHODS},$(foreach T,${TRIOS},$(call analyse_trio,${M},${T}))))
+$(eval $(foreach M,${METHODS},$(foreach T,${TRIOS},$(foreach F,${FREQUENCIES},$(call analyse_trio_with_frequency,${M},${T},${F})))))
 $(eval $(foreach M,${METHODS},$(foreach T,${TRIOS},$(call parentsdb2,${M},${T}))))
 $(eval $(foreach M,${METHODS},$(call parentsdb1,${M})))
 $(eval $(foreach M,${METHODS},$(foreach T,${TRIOS},$(call pipecount,${M},${T}))))
+$(eval $(foreach F,${FREQUENCIES},$(call resources_with_frequency,${F})))
 
 parents.list:
-	find /commun/data/projects/plateforme/NTS-015_ENS_Bezieau_HUGODIMS/ -name '*_final.bam' | ${AWK} -F/ '{print $$NF;}' | cut -d '_' -f2 | ${GREP} -v -E 'E$$' | ${SORT} -T /commun/data/users/asdp/Hugodims/tmp > $@
+	find -L /commun/data/projects/plateforme/NTS-015_ENS_Bezieau_HUGODIMS/ -name '*_final.bam' | ${AWK} -F/ '{print $$NF;}' | cut -d '_' -f2 | ${GREP} -v -E 'E$$' | ${SORT} -T /commun/data/users/asdp/Hugodims/tmp > $@
+
+%.genesdi.vcf.gz : %.vcf.gz ${GENESDILST}
+	zgrep '^#' $< > $(addsuffix .tmp,$@) && \
+	zgrep -w -F -f ${GENESDILST} $< >> $(addsuffix .tmp,$@) || \
+        true
+	${TABIX}/bgzip $(addsuffix .tmp,$@)
+	mv $(addsuffix .tmp.gz,$@) $@
+	${TABIX}/tabix -p vcf $@
 
 clean :
 	${RM} -f *.vcf.gz
